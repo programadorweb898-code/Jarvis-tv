@@ -4,17 +4,15 @@
 
 **Nombre:** Jarvis TV
 
-**Objetivo:** construir un sistema que permita al usuario controlar una Android TV mediante comandos de voz enviados desde un dispositivo móvil, utilizando un agente basado en LLM para interpretar las intenciones y convertirlas en acciones ejecutables.
+**Objetivo:** construir un sistema que permita al usuario controlar una Android TV mediante comandos de voz dados directamente al dispositivo, utilizando un agente basado en LLM (en la nube) para interpretar las intenciones y convertirlas en acciones ejecutables en la televisión.
 
 El sistema debe comportarse como un usuario humano frente a la TV.
-
-El agente no debe disponer de privilegios superiores a los que tendría una persona utilizando el control remoto y la interfaz de la televisión.
 
 ---
 
 ## 2. Objetivo principal
 
-El usuario debe poder hablar desde su móvil y expresar instrucciones en lenguaje natural.
+El usuario debe poder hablar directamente a la Android TV y expresar instrucciones en lenguaje natural.
 
 Ejemplo:
 
@@ -22,19 +20,17 @@ Ejemplo:
 
 El sistema deberá:
 
-1. Capturar el audio.
-2. Convertir voz a texto.
-3. Enviar la intención al agente.
-4. El agente analizará la intención.
-5. El agente seleccionará las tools necesarias.
-6. Las tools generarán comandos concretos.
-7. Los comandos serán enviados a Android TV.
-8. Android TV ejecutará las acciones.
-9. El resultado será informado al usuario.
+1. Capturar el audio en la Android TV.
+2. Enviar el audio (o texto) al Backend en la nube.
+3. El agente (LLM) analizará la intención.
+4. El agente seleccionará las tools necesarias.
+5. El backend enviará un comando concreto a la Android TV.
+6. La Android TV ejecutará la acción mediante Accessibility Services.
+7. El resultado será informado al usuario en la TV.
 
 Flujo conceptual:
 
-Usuario → Móvil → Voz → Agent/LLM → Tools → Comunicación → Android TV → UI → Resultado
+Usuario → Android TV (Voz) → Backend (Agent/LLM) → Comando → Android TV (Accessibility Service) → UI → Resultado
 
 ---
 
@@ -75,62 +71,28 @@ Si una acción no puede realizarla un usuario normal mediante la interfaz dispon
 
 ## 4. Arquitectura conceptual
 
-El sistema estará dividido inicialmente en cinco componentes principales:
+El sistema estará dividido en dos componentes principales:
 
-### Mobile
+### Android TV (Cliente Ligero)
 
 Responsabilidades:
 
-- interfaz del usuario;
 - captura de audio;
-- Speech-to-Text;
 - comunicación con backend;
-- visualización del estado;
-- reproducción de respuestas de voz cuando corresponda.
+- recepción de comandos;
+- ejecución de acciones vía Accessibility Service;
+- visualización de feedback visual.
 
-### Backend
+### Backend (Cerebro)
 
 Responsabilidades:
 
+- recibir audio/texto del cliente;
 - gestionar conexiones;
-- autenticar dispositivos;
-- coordinar comunicación;
-- mantener estado;
-- ejecutar el agente;
-- gestionar tools;
-- controlar sesiones.
-
-### Agent
-
-Responsabilidades:
-
-- interpretar lenguaje natural;
-- identificar intención;
+- ejecutar el agente (LLM);
 - decidir qué tools utilizar;
-- planificar acciones;
-- procesar resultados;
-- determinar si debe continuar, finalizar o pedir información al usuario.
-
-### Android TV
-
-Responsabilidades:
-
-- mantener conexión con el sistema;
-- recibir comandos;
-- ejecutar acciones;
-- devolver resultados;
-- exponer únicamente las capacidades permitidas.
-
-### Accessibility
-
-Responsabilidades:
-
-- interactuar con la interfaz visible;
-- localizar elementos accesibles;
-- realizar clicks;
-- escribir texto;
-- navegar;
-- observar cambios relevantes en la interfaz.
+- enviar comandos de vuelta al cliente;
+- mantener estado de la sesión.
 
 ---
 
@@ -138,22 +100,9 @@ Responsabilidades:
 
 La arquitectura objetivo será:
 
-Mobile → Backend → Android TV
+Android TV ↔ Backend (Nube)
 
-El agente residirá inicialmente en el backend.
-
-La comunicación entre componentes deberá permitir:
-
-- comandos;
-- respuestas;
-- eventos;
-- errores;
-- estado de conexión;
-- identificación del dispositivo.
-
-La comunicación en tiempo real podrá utilizar WebSocket.
-
-No asumir que WebSocket será obligatorio para todas las comunicaciones hasta validar las necesidades de cada componente.
+La comunicación entre componentes utilizará WebSocket para comunicación en tiempo real y baja latencia.
 
 ---
 
@@ -197,21 +146,15 @@ Solicitud del usuario:
 
 Flujo:
 
-1. Usuario → Mobile
-2. El móvil captura: *"Subí un poco el volumen."*
-3. Mobile → Backend
-4. Se envía la intención.
-5. Backend → Agent
-6. El agente determina que necesita utilizar: *"volumeUp()"*
-7. Agent → Backend
-8. Solicita la ejecución de la tool.
-9. Backend → Android TV
-10. Envía el comando.
-11. Android TV ejecuta la acción.
-12. Android TV → Backend
-13. Devuelve resultado.
-14. Backend → Mobile
-15. Informa que la acción fue ejecutada.
+1. Usuario → Android TV
+2. El cliente captura: *"Subí un poco el volumen."*
+3. Android TV → Backend (en la nube)
+4. El agente determina que necesita utilizar: *"volumeUp()"*
+5. Backend → Android TV
+6. Envía el comando de ejecución.
+7. Android TV (Accessibility Service) ejecuta la acción.
+8. Android TV → Backend
+9. Devuelve resultado de ejecución.
 
 ---
 
@@ -291,20 +234,11 @@ Las estructuras definitivas deberán establecerse cuando se implemente el protoc
 El sistema deberá diferenciar:
 
 - usuario;
-- dispositivo móvil;
 - Android TV.
 
 Una cuenta o usuario podrá eventualmente tener más de una TV.
 
-Ejemplo:
-
-Usuario
-→ Living
-→ Dormitorio
-
 El sistema deberá poder determinar a qué dispositivo debe enviarse una acción.
-
-Esta funcionalidad puede implementarse posteriormente y no debe bloquear el primer prototipo.
 
 ---
 
@@ -315,7 +249,6 @@ El sistema deberá contemplar:
 - conexión perdida;
 - reconexión;
 - TV apagada;
-- móvil desconectado;
 - backend no disponible;
 - timeout;
 - comandos duplicados;
@@ -343,7 +276,6 @@ Ejemplos:
 - error del LLM;
 - tool inexistente;
 - parámetros inválidos;
-- TV desconectada;
 - aplicación no disponible;
 - elemento de UI no encontrado;
 - timeout;
@@ -364,15 +296,11 @@ Si una acción falla, debe recibir el error real y decidir si:
 
 El proyecto se desarrollará por fases.
 
-Fase 1 — Comunicación básica
-Fase 2 — Ejecución
-Fase 3 — Tools
-Fase 4 — Backend
-Fase 5 — Agent
-Fase 6 — Speech-to-Text
-Fase 7 — Text-to-Speech
-Fase 8 — Accessibility
-Fase 9 — Integración
+Fase 1 — Comunicación básica (TV ↔ Backend)
+Fase 2 — Ejecución de comandos simples en TV vía Accessibility
+Fase 3 — Tools y Agente en Nube
+Fase 4 — Integración de voz (STT/TTS)
+Fase 5 — Refinamiento
 
 No implementar funcionalidades futuras antes de verificar las fases anteriores.
 
@@ -380,31 +308,18 @@ No implementar funcionalidades futuras antes de verificar las fases anteriores.
 
 ## 15. Stack tecnológico inicial
 
-El stack se decidirá progresivamente.
-
-Tecnologías previstas:
-
 ### Backend
 
 - Node.js
 - TypeScript
 - WebSocket
-- API HTTP cuando sea necesaria
-
-### Mobile
-
-La tecnología se definirá antes de comenzar la implementación móvil.
+- LLM (API de proveedor externo)
 
 ### Android TV
 
 - Android
 - Kotlin
-- Accessibility Service cuando corresponda
-
-### Agent
-
-- LLM con soporte de tool calling
-- arquitectura basada en tools explícitas
+- Accessibility Service (para ejecución de acciones)
 
 No agregar dependencias sin justificar su necesidad.
 
@@ -412,13 +327,10 @@ No agregar dependencias sin justificar su necesidad.
 
 ## 16. Estructura conceptual del proyecto
 
-La estructura inicial prevista:
-
 - "AGENTS.md"
-- "SSD.md"
+- "SDD.md"
 - "skills/"
 - "backend/"
-- "mobile/"
 - "tv/"
 - "docs/"
 
@@ -454,26 +366,16 @@ Cada implementación debe priorizar:
 - bajo acoplamiento;
 - separación de responsabilidades.
 
-El código debe ser adecuado para evolucionar hacia una aplicación real y no únicamente para funcionar como prototipo temporal.
-
 ---
 
 ## 19. Decisiones pendientes
 
-Las siguientes decisiones se tomarán durante el desarrollo y deberán documentarse cuando sean definitivas:
+Las siguientes decisiones se tomarán durante el desarrollo:
 
-- framework de Mobile;
-- proveedor de Speech-to-Text;
-- proveedor de Text-to-Speech;
 - proveedor/modelo LLM;
 - protocolo definitivo de comunicación;
 - estrategia de autenticación;
-- almacenamiento;
-- estrategia de descubrimiento de TVs;
-- estrategia de conexión fuera de la red local;
-- mecanismo definitivo de Accessibility;
-- sistema de observabilidad;
-- estrategia de despliegue.
+- sistema de observabilidad.
 
 No asumir estas decisiones como definitivas hasta documentarlas.
 
@@ -487,9 +389,7 @@ No comenzar implementaciones complejas hasta definir la arquitectura mínima nec
 
 El primer objetivo práctico será conseguir:
 
-Móvil → conexión → Android TV → comando simple → ejecución → respuesta.
-
-Una vez validado este flujo, se continuará con la siguiente fase.
+Android TV → conexión → Backend → ejecución → respuesta.
 
 ---
 
