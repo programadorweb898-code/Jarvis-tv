@@ -19,3 +19,6 @@ local.properties
 # Logs
 *.log
 server.log
+
+# Datos de ejecución (memoria de uso)
+backend/data/

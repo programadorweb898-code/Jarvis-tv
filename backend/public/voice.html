@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis Voz</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #0d1117; color: #e6edf3; font-family: system-ui, sans-serif;
+  }
+  .mic {
+    width: 160px; height: 160px; border-radius: 50%;
+    border: none; background: #238636; color: #fff; font-size: 60px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 6px 20px rgba(0,0,0,.5); transition: transform .1s;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .mic.rec { background: #da3633; transform: scale(1.08); }
+  .mic:active { transform: scale(.95); }
+  .status { margin-top: 24px; font-size: 15px; color: #8b949e; text-align: center; min-height: 20px; }
+  .result { margin-top: 12px; font-size: 16px; text-align: center; max-width: 90%; }
+  .hint { margin-top: 32px; font-size: 13px; color: #484f58; }
+  .conn { position: fixed; top: 12px; right: 16px; font-size: 12px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#f85149; margin-right:4px; }
+  .dot.ok { background:#3fb950; }
+</style>
+</head>
+<body>
+<div class="conn"><span class="dot" id="dot"></span><span id="connLabel">desconectado</span></div>
+<button class="mic" id="mic">🎤</button>
+<div class="status" id="status">Mantené presionado para hablar</div>
+<div class="result" id="result"></div>
+<div class="hint">Mantené el botón y hablá. Se reconoce voz en español con el navegador.</div>
+<script>
+  const micBtn = document.getElementById('mic');
+  const statusEl = document.getElementById('status');
+  const resultEl = document.getElementById('result');
+  const dot = document.getElementById('dot');
+  const connLabel = document.getElementById('connLabel');
+  let ws = null;
+  let rec = null;
+  let listening = false;
+  let finalText = '';
+
+  function setConn(ok) {
+    dot.classList.toggle('ok', ok);
+    connLabel.textContent = ok ? 'conectado' : 'desconectado';
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}`);
+    ws.onopen = () => { setConn(true); };
+    ws.onclose = () => { setConn(false); setTimeout(connect, 2000); };
+    ws.onerror = () => { setConn(false); };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'agent_response') {
+          const text = msg.payload?.text ?? '';
+          resultEl.textContent = '🤖 ' + text;
+        }
+      } catch (_) {}
+    };
+  }
+
+  function newRecognizer() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { statusEl.textContent = 'Tu navegador no soporta voz. Usá Chrome.'; return null; }
+    const r = new SR();
+    r.lang = 'es-ES';
+    r.continuous = false;
+    r.interimResults = false;
+    r.maxAlternatives = 1;
+    r.onstart = () => { listening = true; statusEl.textContent = 'Escuchando... hablá'; };
+    r.onend = () => {
+      listening = false;
+      micBtn.classList.remove('rec');
+      if (finalText) {
+        statusEl.textContent = 'Reconocido: ' + finalText;
+        sendIntent(finalText);
+        finalText = '';
+      } else {
+        statusEl.textContent = 'No te escuché. Mantené presionado de nuevo.';
+      }
+    };
+    r.onerror = (e) => {
+      statusEl.textContent = 'Error de voz (' + e.error + '). Repetí.';
+      finalText = '';
+    };
+    r.onresult = (e) => {
+      const t = e.results[0][0].transcript.trim();
+      if (t) finalText = t;
+    };
+    return r;
+  }
+
+  function sendIntent(text) {
+    resultEl.textContent = '⏳ Procesando: ' + text;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        id: crypto.randomUUID(),
+        type: 'intent',
+        payload: { text },
+        timestamp: new Date().toISOString(),
+      }));
+    } else {
+      resultEl.textContent = 'No hay conexión con el servidor.';
+    }
+  }
+
+  micBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    if (listening) return;
+    finalText = '';
+    resultEl.textContent = '';
+    micBtn.classList.add('rec');
+    try {
+      rec = newRecognizer();
+      if (rec) rec.start();
+    } catch (_) { micBtn.classList.remove('rec'); }
+  });
+
+  micBtn.addEventListener('pointerup', (e) => {
+    e.preventDefault();
+    if (rec && listening) rec.stop();
+    if (rec && !listening) micBtn.classList.remove('rec');
+  });
+
+  micBtn.addEventListener('pointercancel', (e) => {
+    e.preventDefault();
+    if (rec && listening) rec.stop();
+    micBtn.classList.remove('rec');
+  });
+
+  connect();
+</script>
+</body>
+</html>

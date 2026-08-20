@@ -1,20 +1,62 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
+import http from 'http';
+import fs from 'fs';
 import { TvRemote, loadTvRemoteConfig, resolveKeyCode } from './remote';
 import { createProvider } from './agent/provider';
 import { Executor } from './agent/tools';
 import { Agent } from './agent/agent';
+import { MemoryStore } from './memory/store';
+import { createSearchProvider } from './search/search';
+import { transcribeAudio } from './stt';
+import path from 'path';
 
-const tvRemote = new TvRemote(loadTvRemoteConfig(), (ready) => {
-  console.log(`[tv-remote] estado: ${ready ? 'LISTO' : 'caído'}`);
-  broadcastState();
+const memory = new MemoryStore(path.join(__dirname, '..', 'data', 'usage.json'));
+
+const tvRemote = new TvRemote(
+  loadTvRemoteConfig(),
+  (ready) => {
+    console.log(`[tv-remote] estado: ${ready ? 'LISTO' : 'caído'}`);
+    broadcastState();
+  },
+  (app) => {
+    memory.record('app_active', app);
+  },
+);
+
+const searchProvider = createSearchProvider();
+
+const agent = new Agent(
+  createProvider({ language: 'es' }),
+  new Executor(tvRemote, memory, searchProvider),
+  () => {
+    const opens = memory.recentAppOpens(10);
+    if (opens.length === 0) return [];
+    return [
+      `Memoria de uso de la TV (apps abiertas con fecha/hora, más reciente al final):\n${opens
+        .map((e) => `${e.timestamp} ${e.app}`)
+        .join('\n')}`,
+    ];
+  },
+);
+
+const server = http.createServer((req, res) => {
+  const url = (req.url ?? '/').split('?')[0];
+  if (url === '/' || url === '/voice' || url === '/voice.html') {
+    const file = path.join(__dirname, '..', 'public', 'voice.html');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    fs.createReadStream(file).pipe(res);
+    return;
+  }
+  res.writeHead(404);
+  res.end('Not found');
 });
 
-const agent = new Agent(createProvider({ language: 'es' }), new Executor(tvRemote));
+const wss = new WebSocketServer({ server });
 
-const wss = new WebSocketServer({ port: 8080 });
-
-console.log('WebSocket server started on port 8080');
+server.listen(8080, () => {
+  console.log('Server HTTP+WS escuchando en http://192.168.1.87:8080/voice');
+});
 console.log(`[agent] proveedor: ${agent.providerName}`);
 tvRemote.start();
 
@@ -53,6 +95,29 @@ function sendAgentResponse(ws: WebSocket, text: string) {
   };
   ws.send(JSON.stringify(msg));
   console.log('Agent response:', text);
+}
+
+async function handleAudioStream(ws: WebSocket, payload: Record<string, unknown>) {
+  const data = payload.data as string | undefined;
+  if (!data) {
+    sendExecutionResult(ws, 'audio_stream', 'failed', 'audio_stream requiere data base64');
+    return;
+  }
+  try {
+    const audio = Buffer.from(data, 'base64');
+    const format = (payload.format as string) || 'audio/wav';
+    console.log(`Transcribiendo audio (${audio.length} bytes, ${format})...`);
+    const text = await transcribeAudio(audio, format);
+    console.log('Transcripción:', text);
+    if (!text) {
+      sendAgentResponse(ws, 'No te escuché bien, ¿podés repetirlo?');
+      return;
+    }
+    await handleIntent(ws, text);
+  } catch (err) {
+    console.error('Error transcribiendo:', err);
+    sendExecutionResult(ws, 'audio_stream', 'failed', (err as Error).message);
+  }
 }
 
 async function handleIntent(ws: WebSocket, text: string) {
@@ -102,7 +167,7 @@ wss.on('connection', (ws: WebSocket) => {
 
       switch (msg.type) {
         case 'audio_stream':
-          console.log('Processing audio stream...');
+          handleAudioStream(ws, msg.payload ?? {});
           break;
         case 'intent':
           handleIntent(ws, String(msg.payload?.text ?? ''));

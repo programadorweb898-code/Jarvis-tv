@@ -1,10 +1,15 @@
 package com.jarvis.tv
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -16,9 +21,10 @@ import com.jarvis.tv.remote.RemoteManager
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
 import java.net.URI
+import java.util.Locale
 import org.json.JSONObject
 
-class MainActivity : Activity() {
+class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private var client: WebSocketClient? = null
     private var reconnectAttempts = 0
     private lateinit var remoteManager: RemoteManager
@@ -26,10 +32,14 @@ class MainActivity : Activity() {
     private lateinit var codeInput: EditText
     private lateinit var pairButton: Button
     private lateinit var confirmButton: Button
+    private lateinit var voiceButton: Button
+    private var tts: TextToSpeech? = null
+    private var isListening = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
+        tts = TextToSpeech(this, this)
         Thread {
             try {
                 setupRemote()
@@ -102,12 +112,94 @@ class MainActivity : Activity() {
             }
         }
 
+        voiceButton = Button(this).apply {
+            text = "🎤 Hablar"
+            textSize = 18f
+            setOnClickListener { onVoicePressed() }
+        }
+
         root.addView(title)
         root.addView(statusText)
         root.addView(codeInput)
         root.addView(pairButton)
         root.addView(confirmButton)
+        root.addView(voiceButton)
         setContentView(root)
+    }
+
+    private fun onVoicePressed() {
+        if (isListening) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO)
+            return
+        }
+        startListening()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_RECORD_AUDIO &&
+            grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
+            startListening()
+        }
+    }
+
+    private fun startListening() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        isListening = true
+        runOnUiThread { statusText.text = "Hablá al control (mantené el micrófono presionado)" }
+        try {
+            startActivityForResult(intent, REQ_SPEECH)
+        } catch (e: Exception) {
+            Log.e("JarvisTV", "Error voice UI: ${e.message}")
+            runOnUiThread { statusText.text = "Error abriendo la voz: ${e.message}" }
+            isListening = false
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_SPEECH) return
+        isListening = false
+        if (resultCode != RESULT_OK) {
+            runOnUiThread { statusText.text = "No te escuché bien. Repetí." }
+            return
+        }
+        val text = data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?.trim()
+            ?: ""
+        if (text.isEmpty()) {
+            runOnUiThread { statusText.text = "No te escuché bien. Repetí." }
+            return
+        }
+        Log.i("JarvisTV", "Voz reconocida: $text")
+        sendTextIntent(text)
+    }
+
+    private fun sendTextIntent(text: String) {
+        val msg = JSONObject().apply {
+            put("id", java.util.UUID.randomUUID().toString())
+            put("type", "intent")
+            put("payload", JSONObject().apply { put("text", text) })
+            put("timestamp", java.time.Instant.now().toString())
+        }
+        client?.send(msg.toString())
+        runOnUiThread { statusText.text = "Enviando: $text" }
     }
 
     private fun setupRemote() {
@@ -170,8 +262,15 @@ class MainActivity : Activity() {
                     val json = JSONObject(message)
                     val type = json.getString("type")
 
-                    if (type == "command") {
-                        handleCommand(json)
+                    when (type) {
+                        "command" -> handleCommand(json)
+                        "agent_response" -> {
+                            val text = json.optJSONObject("payload")?.optString("text") ?: ""
+                            runOnUiThread {
+                                statusText.text = text
+                                speak(text)
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e("JarvisTV", "Error parseando mensaje: $e")
@@ -237,5 +336,36 @@ class MainActivity : Activity() {
         runOnUiThread {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
+    }
+
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            tts?.language = Locale("es", "ES")
+        } else {
+            Log.w("JarvisTV", "TTS no disponible (status $status)")
+        }
+    }
+
+    private fun speak(text: String) {
+        val engine = tts ?: return
+        if (text.isBlank()) return
+        try {
+            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis-response")
+        } catch (e: Exception) {
+            Log.e("JarvisTV", "Error TTS: ${e.message}")
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        tts?.stop()
+        tts?.shutdown()
+        client?.close()
+    }
+
+    companion object {
+        private const val TAG = "JarvisTV"
+        private const val REQ_RECORD_AUDIO = 1001
+        private const val REQ_SPEECH = 1002
     }
 }

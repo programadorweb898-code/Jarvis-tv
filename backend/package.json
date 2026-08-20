@@ -4,16 +4,19 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "dev": "tsc && node dist/server.js",
-    "start": "node dist/server.js",
+    "dev": "tsc && node --env-file=.env dist/server.js",
+    "start": "node --env-file=.env dist/server.js",
     "test": "tsc && node --test test/agent.test.mjs"
   },
   "dependencies": {
     "androidtv-remote": "^1.0.10",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/pngjs": "^6.0.5",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.5.12",
     "typescript": "^5.5.0"

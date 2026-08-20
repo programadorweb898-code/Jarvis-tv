@@ -115,11 +115,19 @@ El agente resuelve la intención en una tool y la ejecuta. Tools actuales (`back
 | `back` | - | Retrocede |
 | `home` | - | Pantalla de inicio |
 | `navigate` | `direction` (up/down/left/right) | Mueve el foco |
-| `openApp` | `app` (nombre o package) | Abre una app. Deep link nativo si existe (youtube, netflix); si no, URL de Play Store (`.../details?id=<package>`), que Play services resuelve al launch intent. Acepta también un package directo (ej. `org.jellyfin.androidtv`). |
+| `openApp` | `app` (nombre o package) | Abre una app. Deep link nativo si existe (youtube, netflix, disneyplus); si no, URL de Play Store (`.../details?id=<package>`), que Play services resuelve al launch intent. Acepta también un package directo (ej. `org.jellyfin.androidtv`). Nota: el fallback de Play Store requiere que la TV tenga Play Store instalada (en la TV del proyecto no funciona). |
+| `viewingHistory` | - | Consulta la memoria de uso: apps abiertas recientemente con fecha/hora. La TV reporta la app activa (`current_app` del remote) y `openApp` registra cada apertura. Persistido en `backend/data/usage.json`. |
+| `webSearch` | `query` | Busca información actualizada en internet (noticias, horarios, resultados, etc.) vía Tavily (keyless, sin API key). Útil cuando el usuario pide datos que cambian en el tiempo ("¿a qué hora juega River hoy?"). |
 
 Apps con nombre conocido: youtube, netflix, primevideo, disneyplus, spotify, twitch, plex, jellyfin, crunchyroll, kodi, vlc (`backend/src/agent/tools.ts`).
 
-El proveedor del LLM es intercambiable (`backend/src/agent/provider.ts`, variable `LLM_PROVIDER`). Por defecto usa `mock` (reglas en español, sin API key).
+El proveedor del LLM es intercambiable (`backend/src/agent/provider.ts`, variable `LLM_PROVIDER`). Proveedores disponibles:
+- `mock` (por defecto): reglas en español, sin API key.
+- `openai-compatible`: usa la API de chat completions con tools. Configurable por env: `LLM_API_URL` (base URL, ej. `https://api.openai.com/v1`, `http://localhost:1234/v1`, `https://openrouter.ai/api/v1`), `LLM_API_KEY` (opcional para servidores locales sin auth), `LLM_MODEL` (id del modelo).
+
+La búsqueda web es intercambiable (`backend/src/search/search.ts`, variable `SEARCH_PROVIDER`):
+- `tavily` (por defecto): búsqueda real, keyless (sin API key).
+- `mock`: resultados simulados (tests/offline).
 
 ### 4. `error` (Backend/TV -> Backend/TV)
 Reporte de errores en cualquier dirección.

@@ -1,9 +1,16 @@
 import { AgentDecision } from './types';
-import { TOOLS } from './tools';
+import { TOOLS, findTool } from './tools';
+import { ToolDef } from './types';
+
+export interface AgentImage {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
 
 export interface AgentProvider {
   readonly name: string;
-  decide(text: string, sessionContext: string[]): Promise<AgentDecision>;
+  decide(text: string, sessionContext: string[], image?: AgentImage | null): Promise<AgentDecision>;
 }
 
 export interface ProviderContext {
@@ -15,6 +22,8 @@ export function createProvider(ctx: ProviderContext): AgentProvider {
   switch (provider) {
     case 'mock':
       return new MockProvider(ctx);
+    case 'openai-compatible':
+      return new OpenAICompatibleProvider(ctx);
     default:
       throw new Error(`Proveedor LLM no soportado: ${provider}`);
   }
@@ -22,6 +31,130 @@ export function createProvider(ctx: ProviderContext): AgentProvider {
 
 function toDecision(tool: string, params: Record<string, unknown>): AgentDecision {
   return { kind: 'tool', tool, params };
+}
+
+function toolToOpenAIFunction(tool: ToolDef) {
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  for (const param of tool.params) {
+    properties[param.name] = { type: param.type, description: param.description };
+    if (param.required) required.push(param.name);
+  }
+  return {
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: {
+        type: 'object',
+        properties,
+        ...(required.length ? { required } : {}),
+      },
+    },
+  };
+}
+
+/**
+ * Provider OpenAI-compatible (chat completions) configurable por env:
+ *   LLM_API_URL  -> base URL (ej. https://api.openai.com/v1, http://localhost:1234/v1, https://openrouter.ai/api/v1)
+ *   LLM_API_KEY  -> API key (opcional para servidores locales sin auth)
+ *   LLM_MODEL    -> id del modelo
+ * Sirve para OpenAI, llama.cpp, vLLM, OpenRouter, etc.
+ */
+class OpenAICompatibleProvider implements AgentProvider {
+  readonly name = 'openai-compatible';
+
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+  private readonly model: string;
+
+  constructor(private readonly ctx: ProviderContext) {
+    this.baseUrl = (process.env.LLM_API_URL || '').replace(/\/$/, '');
+    this.apiKey = process.env.LLM_API_KEY || '';
+    this.model = process.env.LLM_MODEL || '';
+    if (!this.baseUrl || !this.model) {
+      throw new Error(
+        'openai-compatible requiere LLM_API_URL y LLM_MODEL (LLM_API_KEY si requiere auth)',
+      );
+    }
+  }
+
+  async decide(text: string, sessionContext: string[], image?: AgentImage | null): Promise<AgentDecision> {
+    const userContent: unknown[] = [{ type: 'text', text }];
+    if (image) {
+      userContent.push({
+        type: 'image_url',
+        image_url: { url: image.dataUrl },
+      });
+      userContent.push({
+        type: 'text',
+        text: `(Esta es la pantalla actual de la TV: ${image.width}x${image.height}). Usala para decidir cómo navegar.`,
+      });
+    }
+
+    const messages = [
+      {
+        role: 'system',
+        content: `Sos el agente de Jarvis TV. Respondé en ${this.ctx.language === 'es' ? 'español' : this.ctx.language}. Usá las tools para ejecutar acciones en la Android TV. Si la intención no requiere tool, respondé con texto.
+
+Ver la pantalla: si necesitás seleccionar un elemento visible (perfil, video, menú, botón) usá seeScreen ANTES de navigate/openApp/enter, y NO asumas qué app está abierta. Para cambiar de cuenta/perfil dentro de una app abierta, usá seeScreen y navegá hasta "Cambiar de cuenta". Podés encadenar seeScreen→navigate→seeScreen→...→enter; cada navigate actualiza la pantalla, volvé a ver antes de confirmar con enter.`,
+      },
+      ...sessionContext.map((c) => ({ role: 'user', content: c })),
+      { role: 'user', content: userContent },
+    ];
+
+    const res = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: this.model,
+        messages,
+        tools: TOOLS.map(toolToOpenAIFunction),
+        tool_choice: 'auto',
+        max_tokens: 1024,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      return {
+        kind: 'error',
+        message: `LLM API error ${res.status}: ${body.slice(0, 300)}`,
+      };
+    }
+
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string | null; tool_calls?: unknown[] } }>;
+    };
+    const message = data.choices?.[0]?.message;
+    const toolCall = Array.isArray(message?.tool_calls) && message!.tool_calls[0]
+      ? (message!.tool_calls[0] as { function?: { name?: string; arguments?: string } })
+      : null;
+
+    if (toolCall?.function?.name) {
+      const tool = findTool(toolCall.function.name);
+      if (!tool) {
+        return {
+          kind: 'error',
+          message: `Tool no soportada por el agente: ${toolCall.function.name}`,
+        };
+      }
+      let params: Record<string, unknown> = {};
+      if (toolCall.function.arguments) {
+        try {
+          params = JSON.parse(toolCall.function.arguments);
+        } catch {
+          params = {};
+        }
+      }
+      return { kind: 'tool', tool: tool.name, params };
+    }
+
+    return { kind: 'reply', text: message?.content?.trim() || 'Sin respuesta del modelo.' };
+  }
 }
 
 /**
@@ -33,7 +166,7 @@ class MockProvider implements AgentProvider {
 
   constructor(private readonly ctx: ProviderContext) {}
 
-  async decide(text: string): Promise<AgentDecision> {
+  async decide(text: string, _sessionContext: string[], _image?: AgentImage | null): Promise<AgentDecision> {
     const t = text
       .toLowerCase()
       .normalize('NFD')
@@ -59,6 +192,12 @@ class MockProvider implements AgentProvider {
     }
     if (/(atras|retroced|volve (para )?atras)/.test(t)) {
       return toDecision('back', {});
+    }
+    if (/(que (estaba|estuve) viendo|que vi (ayer|anoche|hoy)|ultima(s)? (app|aplicacion)|aplicaciones recientes|historial)/.test(t)) {
+      return toDecision('viewingHistory', {});
+    }
+    if (/(a que hora|que dia|cuando (juega|es)|resultado|noticias?|clima|informacion)/.test(t)) {
+      return toDecision('webSearch', { query: text });
     }
     const appMatch = t.match(/abri( (la|el))? ([a-z ]+)$/);
     if (appMatch) {

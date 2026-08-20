@@ -89,10 +89,16 @@ export class TvRemote {
   private retryTimer: NodeJS.Timeout | null = null;
   private stopped = false;
   private readonly onStateChange: (ready: boolean) => void;
+  private readonly onCurrentApp: ((app: string) => void) | null;
 
-  constructor(config: TvRemoteConfig, onStateChange: (ready: boolean) => void) {
+  constructor(
+    config: TvRemoteConfig,
+    onStateChange: (ready: boolean) => void,
+    onCurrentApp?: (app: string) => void,
+  ) {
     this.config = config;
     this.onStateChange = onStateChange;
+    this.onCurrentApp = onCurrentApp ?? null;
   }
 
   start(): void {
@@ -172,6 +178,10 @@ export class TvRemote {
       remote.on('volume', (volume: unknown) =>
         console.log(`[tv-remote] volume: ${JSON.stringify(volume)}`),
       );
+      remote.on('current_app', (app: string) => {
+        console.log(`[tv-remote] app activa: ${app}`);
+        this.onCurrentApp?.(app);
+      });
 
       remote.start().catch((err: Error) => {
         console.error(`[tv-remote] start error:`, err.message);

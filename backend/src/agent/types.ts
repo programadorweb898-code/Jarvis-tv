@@ -19,4 +19,5 @@ export interface ToolDef {
 export interface ExecutionResult {
   status: 'success' | 'failed';
   message: string;
+  image?: { dataUrl: string; width: number; height: number };
 }

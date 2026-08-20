@@ -387,7 +387,7 @@ No asumir estas decisiones como definitivas hasta documentarlas.
 
 ## 20. Estado actual
 
-El proyecto se encuentra en la **Fase 2** del desarrollo incremental.
+El proyecto se encuentra en la **Fase 4** del desarrollo incremental.
 
 ### Fase 1 — Comunicación básica (TV ↔ Backend) — en curso
 
@@ -414,17 +414,59 @@ El proyecto se encuentra en la **Fase 2** del desarrollo incremental.
 - `backend/src/agent/`:
   - `types.ts`: `AgentDecision` (tool/reply/error), `ToolDef`, `ExecutionResult`.
   - `tools.ts`: registro de tools + `Executor` (traduce tool → tecla/app link vía `TvRemote`). Tools: `volumeUp`, `volumeDown`, `mute`, `play`, `pause`, `playPause`, `back`, `home`, `navigate(direction)`, `openApp(app)`.
-  - `provider.ts`: interfaz `AgentProvider` intercambiable + factory (`LLM_PROVIDER` env, por defecto `mock`) + provider mock rule-based en español (sin API key).
+  - `provider.ts`: interfaz `AgentProvider` intercambiable + factory (`LLM_PROVIDER` env, por defecto `mock`) + providers: `mock` (reglas en español) y `openai-compatible` (chat completions con tools, configurable por env).
   - `agent.ts`: decide (provider) → valida → ejecuta → `execution_result` + `agent_response`.
 - `server.ts`: nuevo mensaje `intent` (texto) → agente → ejecución.
 - **Verificado localmente** (sin TV): `npm test` (node:test) — decisión del provider mock, mapping de executor y agente end-to-end con remote falso.
-- **Pendiente**: conectar proveedor LLM real (OpenAI/Anthropic/otro), probar `openApp` en la TV.
+- **Pendiente**: configurar el proveedor LLM real en el entorno de despliegue.
+- **Implementado (2026-08-20):** lectura de pantalla (screencap/visión) — el agente puede ver la pantalla real vía ADB y responder sobre contenido dentro de apps (perfiles de YouTube, menús). Detalle en la sección "Screencap / Visión".
+
+### Proveedor LLM (decisión 2026-08-20)
+
+- **Decisión:** el agente usa un proveedor **OpenAI-compatible** (`LLM_PROVIDER=openai-compatible`) en `backend/src/agent/provider.ts`, configurable por env: `LLM_API_URL` (base URL), `LLM_API_KEY` (opcional), `LLM_MODEL`. Soporta OpenAI, llama.cpp, vLLM, OpenRouter, etc., con tool calling sobre `TOOLS`.
+- **Modelo elegido (verificado 2026-08-20):** **`qwen/qwen3.6-27b` en Groq** (`https://api.groq.com/openai/v1`). Soporta tool calling, reasoning, json_mode y **entrada de imágenes** (multimodal — necesario para la Fase B de screencap). Config en `backend/.env` (gitignored). Los modelos llama-3.3 de Groq no están disponibles en la cuenta.
+- Las tools se exponen al LLM como funciones (schema JSON); el agente valida que la tool solicitada exista en `TOOLS` y descarta las desconocidas (principio Human Capability).
+- `mock` sigue disponible para desarrollo sin API key.
+- **Verificado end-to-end** (TV real + LLM real): "subí el volumen" → tool `volumeUp` → TV ejecuta; "¿a qué hora juega River?" → `webSearch` con datos reales; "¿qué estaba viendo?" → memoria; "abrí netflix" → openApp.
+
+### Memoria de uso (2026-08-20)
+
+- **`MemoryStore`** (`backend/src/memory/store.ts`): log persistente (JSON en `backend/data/usage.json`, gitignored) de eventos `app_open` (cuando `openApp` ejecuta) y `app_active` (reportado por la TV vía `current_app` del remote protocol), con timestamp.
+- **Tool `viewingHistory`**: el agente la consulta para responder preguntas como "¿qué estaba viendo ayer a las 22:00?" o "¿cuál fue la última app?".
+- **Contexto al LLM**: `Agent` inyecta el historial reciente en el `sessionContext` del provider, para que el modelo responda naturalmente sin llamar la tool explícitamente.
+- **Verificado end-to-end** (TV real): `abrí netflix` → se registró `app_open`; `¿qué estaba viendo?` → "recientemente viste: netflix (20-ago, 12:21 p. m.)".
+- **Límite**: la memoria registra lo que se hace *vía Jarvis* (openApp + app activa detectada). No captura la pantalla ni el contenido dentro de las apps (favoritos de YouTube, listados de películas) — eso requiere screencap/visión, aún pendiente.
+
+### Búsqueda web (2026-08-20)
+
+- **`SearchProvider`** (`backend/src/search/search.ts`): interfaz intercambiable + factory (`SEARCH_PROVIDER` env, por defecto `tavily`). Tavily usa modo **keyless** (sin API key, optimizado para LLMs/agentes).
+- **Tool `webSearch(query)`**: el agente la invoca para datos actualizados que no sabe con certeza (horarios de partidos, noticias, resultados).
+- El resultado se formatea (título + URL + contenido) y el agente responde al usuario con lo encontrado.
+- **Verificado end-to-end**: "¿a qué hora juega River hoy?" → buscó en internet y respondió con el horario real (vs Santa Fe 21:30, ESPN, Copa Sudamericana).
+- **Pendiente**: integrar `webSearch` con la navegación para "poné el partido" (búsqueda → detectar canal → abrir app instalada → reproducir).
+
+### Screencap / Visión (2026-08-20) — implementado y verificado
+
+- **Decisión:** el agente puede **ver la pantalla real de la TV** mediante captura vía **ADB** desde el backend (`backend/src/screencap.ts`). Es la única vía posible en esta TV: no hay accesibilidad de terceros y la app TV no puede usar MediaProjection sin diálogo de consentimiento (y la captura local desde la propia TV no se puede transmitir al backend por las limitaciones del firmware).
+- **Captura:** `adb -s <TV>:5555 exec-out screencap -p` → PNG 1280x720 → **redimensionado a 480px y codificado JPEG (base64)** con `pngjs` + `jpeg-js` (deps puras JS, sin binarios nativos) para no exceder el límite del LLM.
+- **Detalle de la TV:** el `screencap` de esta TV antepone una línea `Init wrapper sys mutex successful...` al PNG y a veces añade bytes tras IEND; `captureScreenPng()` localiza la firma `\x89PNG` y corta en el último `IEND`.
+- **Tool `seeScreen`** (en `tools.ts`): captura la pantalla y adjunta la imagen al contexto del LLM. El `Executor` la guarda como `lastScreenCapture` y el resultado se propaga vía `ExecutionResult.image`.
+- **Loop de visión en `agent.ts`:** `handle()` itera hasta 6 pasos; si el LLM decide `seeScreen`, captura y vuelve a decidir **con la imagen** (el provider la manda como `image_url` en el mensaje de usuario). Tras una tool de acción (p. ej. `enter`) se detiene y reporta.
+- **Prompt:** el system prompt del provider fuerza el uso de `seeScreen` antes de `navigate`/`openApp`/`enter` cuando la tarea requiere seleccionar un elemento visible (perfil, video, menú), y prohíbe asumir qué app está abierta.
+- **Modelo multimodal:** `qwen/qwen3.6-27b` en Groq acepta `image_url` y **describe la pantalla correctamente** (verificado: la selección de perfiles de YouTube con el perfil enfocado, el estado de la app, etc.).
+- **Verificado end-to-end** (TV real + LLM real): "entrá al primer perfil de youtube" → el agente capturó la pantalla (perfiles con "Chefeelto y su tia" enfocado), decidió `enter` y ejecutó la confirmación en la TV real.
+- **Pendiente:** reconocimiento de texto/búsqueda visual dentro de la pantalla para tareas como "reproducí el primer video de la fila" (requiere el bucle completo ver→navegar→ver→entrar en una sola instrucción), y verificar el caso de que la pantalla cambie durante el flujo.
+
+### Verificado en TV real (2026-08-20)
+
+- `openApp` con deep link nativo **funciona** en esta TV: youtube (`https://www.youtube.com/tv`), netflix (`https://www.netflix.com/`), disneyplus (`https://www.disneyplus.com/`) se abrieron correctamente desde el backend vía remote 6466.
+- El **fallback por Play Store no funciona en esta TV**: la TV (AI PONT) **no tiene Play Store instalada** (`com.android.vending` ausente), por lo que `sendAppLink` con URL de Play Store no abre nada. En TVs con Play Store sí funcionaría.
+- Apps con deep link nativo en `tools.ts`: youtube, netflix, disneyplus. El resto usa fallback Play Store (solo útil en TVs con Play Store).
 
 ### Pendientes
 
 - Probar el flujo completo con voz (STT/TTS) con el agente LLM.
-- Conectar proveedor LLM real (OpenAI/Anthropic/otro) en `provider.ts`.
-- Probar `openApp` en la TV real (deep links de youtube/netflix y fallback por Play Store ya implementados, sin verificar en dispositivo).
+- Probar el provider `openai-compatible` contra un LLM real (configurar `LLM_API_URL`, `LLM_API_KEY`, `LLM_MODEL` en el despliegue).
 - Autenticación y WSS (actualmente el backend es `ws://` sin auth).
 - Configurar URL del backend de Render.
 - Reinstalar el APK final en la TV (el hook temporal de auto-submit del código de pairing fue eliminado).
