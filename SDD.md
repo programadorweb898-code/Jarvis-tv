@@ -317,6 +317,7 @@ No implementar funcionalidades futuras antes de verificar las fases anteriores.
 - WebSocket
 - LLM (API de proveedor externo)
 - `androidtv-remote` (cliente del Android TV Remote protocol v2 para inyección de teclas)
+- `fast-xml-parser` (parseo del dump de UI de uiautomator en `uidump.ts`)
 
 ### Android TV
 
@@ -455,7 +456,34 @@ El proyecto se encuentra en la **Fase 4** del desarrollo incremental.
 - **Prompt:** el system prompt del provider fuerza el uso de `seeScreen` antes de `navigate`/`openApp`/`enter` cuando la tarea requiere seleccionar un elemento visible (perfil, video, menú), y prohíbe asumir qué app está abierta.
 - **Modelo multimodal:** `qwen/qwen3.6-27b` en Groq acepta `image_url` y **describe la pantalla correctamente** (verificado: la selección de perfiles de YouTube con el perfil enfocado, el estado de la app, etc.).
 - **Verificado end-to-end** (TV real + LLM real): "entrá al primer perfil de youtube" → el agente capturó la pantalla (perfiles con "Chefeelto y su tia" enfocado), decidió `enter` y ejecutó la confirmación en la TV real.
-- **Pendiente:** reconocimiento de texto/búsqueda visual dentro de la pantalla para tareas como "reproducí el primer video de la fila" (requiere el bucle completo ver→navegar→ver→entrar en una sola instrucción), y verificar el caso de que la pantalla cambie durante el flujo.
+- **Pendiente:** el camino feliz de navegación por visión requiere que el LLM encadene pasos; con el tier gratuito de Groq (8000 TPM) cada llamada con imagen cuesta ~1900-4800 tokens y un loop de varios pasos provoca errores 429. El flujo "cambiar perfil de YouTube" ahora intenta primero `getScreenElements`/`clickElement` (texto, barato) y solo cae en visión cuando el dump no tiene semántica.
+
+### Lectura de UI por ADB uiautomator (2026-08-20) — implementado y verificado
+
+- **Decisión:** en TVs donde el AccessibilityService no es habilitable por firmware, la **lectura de la interfaz y el click por elemento** se resuelven **desde el backend vía ADB**, no desde el service. Mantiene la interfaz de tools del agente (`getScreenElements`, `clickElement`) sin tocar el flujo de `navigate`/`volumeUp`/`openApp`/`home`/`back`/`enter` (que siguen por androidtv-remote).
+- **`backend/src/uidump.ts`** (hermano de `screencap.ts`, reusa `ADB_PATH`/`TV_ADDRESS`):
+  - `runUiautomatorDump()`: `adb shell uiautomator dump /sdcard/jarvis_dump.xml` + `adb exec-out cat`.
+  - `parseUiDump(xml)` con **fast-xml-parser** (dependencia nueva): devuelve `{ text, contentDesc, className, bounds{x1,y1,x2,y2}, clickable }`, filtrando nodos sin texto ni bounds válidos.
+  - `findMatchingNode(nodes, query)`: matching fuzzy case-insensitive, sin acentos ni espacios.
+  - `tapAt(x, y)`: `adb shell input tap`.
+  - Manejo de error: si ADB falla o el XML viene vacío → array vacío + log (sin excepción sin capturar).
+- **Tools nuevas en `tools.ts`:** `getScreenElements` (lista texto+posición de elementos visibles) y `clickElement(text)` (busca fuzzy, calcula centro del bounds, `tapAt`). `Executor` acepta un `UiDumper` inyectable para tests sin TV real.
+- **`seeScreen` queda como fallback** cuando `getScreenElements` devuelve vacío o no encuentra el elemento (UI en canvas/Compose sin semántica, típico de YouTube TV).
+- **Prompt (`provider.ts`):** el flujo por defecto es `getScreenElements` → `clickElement`; `seeScreen` queda explícitamente como último recurso.
+- **En la app TV (`JarvisAccessibilityService.kt`):** se eliminó `getScreenDump`/`collectNodes` (dependían de `rootInActiveWindow`, service habilitado). Quedan `pressButton`, `navigate`, `typeText`, `volume`, `swipe`; se documentó que `typeText` y `swipe` dependen del service habilitado (limitación conocida en esta TV).
+- **Verificado:** `parseUiDump` + `findMatchingNode` + flujo `getScreenElements`→`clickElement` con mock del dump XML (11 tests, 0 fallos).
+- **Hallazgo en la TV real:** tanto el launcher de fábrica como YouTube TV **no exponen semántica a uiautomator** (siempre 16 nodos vacíos, sin text ni content-desc; UI dibujada en SurfaceView). Consecuencia: en **este** dispositivo, `getScreenElements`/`clickElement` nunca encuentran elementos con texto y el flujo cae al fallback de visión. `getScreenElements`/`clickElement` siguen siendo útiles en TVs con launcher/apps con semántica accesible.
+
+### Flujo real en TVs sin semántica de accesibilidad: seeScreen → tapAt (2026-08-20)
+
+- En esta TV, el camino feliz para tocar un elemento es **seeScreen (una sola vez) → tapAt(x, y)**, no la navegación ciega guiada por visión:
+  1. `seeScreen` captura la pantalla (ADB) y adjunta la imagen al contexto del LLM junto con su resolución (p. ej. `224x126`).
+  2. El propio orquestador (provider.ts, ya multimodal) identifica las coordenadas del elemento **sobre la imagen reducida**.
+  3. `tapAt(x, y)` (tool directa del agente) escala esas coordenadas a la resolución real de la captura (`realSize`, expuesta por `captureScreenForVision`/`resizePngToJpeg` en `screencap.ts`) y ejecuta `adb shell input tap`. El backend hace la conversión; el prompt le indica al LLM que las coordenadas van en el sistema de la imagen, no en la resolución real.
+- **Sin llamadas de visión duplicadas:** no existe un modelo de visión "aparte" dentro de `clickElement` ni de `tapAt`; el LLM multimodal ya recibió la imagen en el `decide()` del loop. `tapAt` es una tool directa, no lógica interna de otra tool.
+- **`Executor` mantiene estado:** `lastScreen` (imagen reducida) + `lastScreenRealSize` (resolución original). `tapAt` falla con "No hay una captura de pantalla reciente. Llamá a seeScreen antes de tapAt" si no hubo captura previa.
+- **Reserva de dpad:** `navigate` queda solo para pedidos genéricos ("andá para arriba", "movete a la derecha"), no como mecanismo de búsqueda de elementos.
+- **Verificado:** test con mock de captura 224x126 → `realSize` 1280x720, `tapAt(112,63)` → `adb input tap 640 360` (12 tests, 0 fallos).
 
 ### Verificado en TV real (2026-08-20)
 

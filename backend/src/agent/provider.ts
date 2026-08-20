@@ -56,9 +56,10 @@ function toolToOpenAIFunction(tool: ToolDef) {
 
 /**
  * Provider OpenAI-compatible (chat completions) configurable por env:
- *   LLM_API_URL  -> base URL (ej. https://api.openai.com/v1, http://localhost:1234/v1, https://openrouter.ai/api/v1)
- *   LLM_API_KEY  -> API key (opcional para servidores locales sin auth)
- *   LLM_MODEL    -> id del modelo
+ *   LLM_API_URL      -> base URL (ej. https://api.openai.com/v1, http://localhost:1234/v1, https://openrouter.ai/api/v1)
+ *   LLM_API_KEY      -> API key (opcional para servidores locales sin auth)
+ *   LLM_MODEL        -> id del modelo multimodal (usado cuando hay imagen, p. ej. seeScreen)
+ *   LLM_TEXT_MODEL   -> id del modelo de texto sin visión (usado en pasos sin imagen; default: LLM_MODEL)
  * Sirve para OpenAI, llama.cpp, vLLM, OpenRouter, etc.
  */
 class OpenAICompatibleProvider implements AgentProvider {
@@ -67,11 +68,13 @@ class OpenAICompatibleProvider implements AgentProvider {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly model: string;
+  private readonly textModel: string;
 
   constructor(private readonly ctx: ProviderContext) {
     this.baseUrl = (process.env.LLM_API_URL || '').replace(/\/$/, '');
     this.apiKey = process.env.LLM_API_KEY || '';
     this.model = process.env.LLM_MODEL || '';
+    this.textModel = process.env.LLM_TEXT_MODEL || this.model;
     if (!this.baseUrl || !this.model) {
       throw new Error(
         'openai-compatible requiere LLM_API_URL y LLM_MODEL (LLM_API_KEY si requiere auth)',
@@ -80,6 +83,8 @@ class OpenAICompatibleProvider implements AgentProvider {
   }
 
   async decide(text: string, sessionContext: string[], image?: AgentImage | null): Promise<AgentDecision> {
+    const useImage = Boolean(image);
+    const model = useImage ? this.model : this.textModel;
     const userContent: unknown[] = [{ type: 'text', text }];
     if (image) {
       userContent.push({
@@ -97,7 +102,12 @@ class OpenAICompatibleProvider implements AgentProvider {
         role: 'system',
         content: `Sos el agente de Jarvis TV. Respondé en ${this.ctx.language === 'es' ? 'español' : this.ctx.language}. Usá las tools para ejecutar acciones en la Android TV. Si la intención no requiere tool, respondé con texto.
 
-Ver la pantalla: si necesitás seleccionar un elemento visible (perfil, video, menú, botón) usá seeScreen ANTES de navigate/openApp/enter, y NO asumas qué app está abierta. Para cambiar de cuenta/perfil dentro de una app abierta, usá seeScreen y navegá hasta "Cambiar de cuenta". Podés encadenar seeScreen→navigate→seeScreen→...→enter; cada navigate actualiza la pantalla, volvé a ver antes de confirmar con enter.`,
+Ver la pantalla:
+- Camino principal para ubicar o tocar un elemento visible (perfil, botón, menú): getScreenElements (lista lo que hay) → clickElement(text del elemento). No asumas qué app está abierta.
+- Si getScreenElements viene vacío ("No se detectaron elementos") O clickElement no encuentra el elemento: llamá seeScreen UNA sola vez, mirá la imagen, identificá el elemento buscado y llamá tapAt(x, y) con sus coordenadas. No encadenes múltiples seeScreen ni navegues con dpad a ciegas.
+- Las coordenadas de tapAt van en el sistema de coordenadas de la imagen que viste con seeScreen (el ancho y alto se te informan al capturar), NO en la resolución real de la TV: el backend las escala automáticamente.
+- navigate (dpad) queda reservado para pedidos genéricos sin un elemento visual puntual (p. ej. "andá para arriba", "movete a la derecha"), no como mecanismo de búsqueda de elementos.
+- Para cambiar de cuenta/perfil dentro de una app abierta: listá los elementos con getScreenElements y tocá "Cambiar de cuenta" o el perfil con clickElement; si el listado viene vacío, seeScreen una vez y tapAt sobre el perfil que veas en la imagen.`,
       },
       ...sessionContext.map((c) => ({ role: 'user', content: c })),
       { role: 'user', content: userContent },
@@ -110,7 +120,7 @@ Ver la pantalla: si necesitás seleccionar un elemento visible (perfil, video, m
         ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
       },
       body: JSON.stringify({
-        model: this.model,
+        model,
         messages,
         tools: TOOLS.map(toolToOpenAIFunction),
         tool_choice: 'auto',

@@ -43,7 +43,9 @@ export class Agent {
 
       if (decision.kind === 'tool') {
         const result = await this.apply(decision, image);
-        const cont = ['navigate', 'openApp', 'back', 'home'].includes(decision.tool);
+        const cont = ['navigate', 'openApp', 'back', 'home', 'getScreenElements', 'clickElement'].includes(
+          decision.tool,
+        );
         if (cont) {
           stepLog.push(`[Acción: ${decision.tool} ${JSON.stringify(decision.params)} → ${result.response}]`);
           continue;

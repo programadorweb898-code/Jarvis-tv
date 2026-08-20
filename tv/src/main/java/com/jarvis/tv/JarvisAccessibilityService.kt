@@ -75,6 +75,10 @@ class JarvisAccessibilityService : AccessibilityService() {
                 "pause" -> mediaKey(RemoteKeyCode.KEYCODE_MEDIA_PAUSE, "pause")
                 "volumeUp" -> volume(true)
                 "volumeDown" -> volume(false)
+                // getScreenDump y clickElement se eliminaron: dependían de rootInActiveWindow,
+                // que exige el AccessibilityService habilitado (bloqueado por firmware en esta TV).
+                // La lectura de UI y el click se resuelven ahora vía ADB uiautomator + input tap
+                // desde el backend (ver backend/src/uidump.ts).
                 else -> CommandResult("failed", "Acción no soportada: $action")
             }
         } catch (e: Exception) {
@@ -216,4 +220,16 @@ class JarvisAccessibilityService : AccessibilityService() {
             CommandResult("failed", "No se pudo ejecutar swipe")
         }
     }
+
+    // getScreenDump() y collectNodes() se eliminaron: leían rootInActiveWindow y clickeaban por
+    // nodo, pero ambos exigen el AccessibilityService habilitado. El firmware de esta TV (AI PONT,
+    // Android 14 / MediaTek homwee) bloquea la habilitación de servicios de accesibilidad de
+    // terceros ("disallowed by device admin policy"), así que ese camino no es utilizable aquí.
+    // La lectura de UI y el click se resuelven ahora vía ADB desde el backend:
+    //   - leer elementos: uiautomator dump (backend/src/uidump.ts -> getScreenElements)
+    //   - tocar un elemento: input tap (backend/src/uidump.ts -> tapAt)
+    // En TVs donde el AccessibilityService sí sea habilitable, esta clase sigue siendo la opción
+    // para pressButton/navigate/typeText/volume/swipe. typeText y swipe dependen del service
+    // habilitado (findFocus, dispatchGesture, rootInActiveWindow): limitación conocida en este
+    // dispositivo.
 }

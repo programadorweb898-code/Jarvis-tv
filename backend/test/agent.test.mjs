@@ -4,6 +4,7 @@ import { createProvider } from '../dist/agent/provider.js';
 import { Executor } from '../dist/agent/tools.js';
 import { Agent } from '../dist/agent/agent.js';
 import { MemoryStore } from '../dist/memory/store.js';
+import { parseUiDump, findMatchingNode } from '../dist/uidump.js';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -238,4 +239,109 @@ test('openai-compatible mapea tool_calls y valida tool desconocida', async () =>
   process.env.LLM_API_URL = old.url;
   process.env.LLM_API_KEY = old.key;
   process.env.LLM_MODEL = old.model;
+});
+
+test('parseUiDump extrae nodos con texto/bounds y filtra los vacíos', () => {
+  const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node index="0" text="" class="android.widget.FrameLayout" content-desc="" clickable="false" bounds="[0,0][1280,720]">
+    <node index="1" text="Chefeelto y su tia" class="android.widget.TextView" content-desc="" clickable="true" bounds="[100,80][300,120]"/>
+    <node index="2" text="ProgramadorWeb" class="android.widget.TextView" content-desc="perfil de programador" clickable="true" bounds="[100,130][300,170]"/>
+    <node index="3" text="Cambiar de cuenta" class="android.widget.Button" content-desc="" clickable="true" bounds="[640,350][880,390]"/>
+  </node>
+</hierarchy>`;
+  const nodes = parseUiDump(xml);
+  assert.equal(nodes.length, 3);
+  assert.deepEqual(nodes[1], {
+    text: 'ProgramadorWeb',
+    contentDesc: 'perfil de programador',
+    className: 'android.widget.TextView',
+    bounds: { x1: 100, y1: 130, x2: 300, y2: 170 },
+    clickable: true,
+  });
+});
+
+test('findMatchingNode matchea fuzzy (case, acentos, espacios)', () => {
+  const nodes = parseUiDump(
+    `<hierarchy><node><node text="ProgramadorWeb" content-desc="" clickable="true" bounds="[100,130][300,170]"/><node text="Cambiar de cuenta" content-desc="" clickable="true" bounds="[640,350][880,390]"/></node></hierarchy>`,
+  );
+  assert.equal(findMatchingNode(nodes, 'programador web')?.text, 'ProgramadorWeb');
+  assert.equal(findMatchingNode(nodes, 'PROGRAMADOR')?.text, 'ProgramadorWeb');
+  assert.equal(findMatchingNode(nodes, 'cámbiar de cuénta')?.text, 'Cambiar de cuenta');
+  assert.equal(findMatchingNode(nodes, 'no existe'), null);
+});
+
+test('executor getScreenElements y clickElement usan el dumper inyectado', async () => {
+  const taps = [];
+  const fakeDumper = {
+    getScreenElements: () => {
+      calls.push(['dump']);
+      return parseUiDump(
+        `<hierarchy><node><node text="ProgramadorWeb" content-desc="" clickable="true" bounds="[100,130][300,170]"/><node text="Cambiar de cuenta" content-desc="" clickable="true" bounds="[640,350][880,390]"/></node></hierarchy>`,
+      );
+    },
+    tapAt: (x, y) => {
+      taps.push([x, y]);
+      return true;
+    },
+  };
+  const exec = new Executor(fakeRemote, undefined, undefined, fakeDumper);
+
+  calls.length = 0;
+  const list = await exec.execute('getScreenElements', {});
+  assert.equal(list.status, 'success');
+  assert.match(list.message, /ProgramadorWeb/);
+  assert.match(list.message, /clickable/);
+  assert.match(list.message, /\(200,150\)/);
+  assert.deepEqual(calls, [['dump']]);
+
+  const click = await exec.execute('clickElement', { text: 'cambiar de cuenta' });
+  assert.equal(click.status, 'success');
+  assert.match(click.message, /Tocado/);
+  assert.deepEqual(taps, [[760, 370]]);
+
+  const miss = await exec.execute('clickElement', { text: 'no existe' });
+  assert.equal(miss.status, 'failed');
+  assert.match(miss.message, /No encontré/);
+
+  const noText = await exec.execute('clickElement', {});
+  assert.equal(noText.status, 'failed');
+  assert.match(noText.message, /requiere el parámetro text/);
+});
+
+test('executor tapAt escala coordenadas de la imagen chica a la real', async () => {
+  const taps = [];
+  const fakeDumper = {
+    getScreenElements: () => [],
+    tapAt: (x, y) => {
+      taps.push([x, y]);
+      return true;
+    },
+  };
+  const fakeCapture = () => ({
+    dataUrl: 'data:image/jpeg;base64,xx',
+    width: 224,
+    height: 126,
+    bytes: 1000,
+    realSize: { width: 1280, height: 720 },
+  });
+  const exec = new Executor(fakeRemote, undefined, undefined, fakeDumper, fakeCapture);
+
+  const shot = await exec.execute('seeScreen', {});
+  assert.equal(shot.status, 'success');
+  assert.match(shot.message, /224x126/);
+
+  const ok = await exec.execute('tapAt', { x: 112, y: 63 });
+  assert.equal(ok.status, 'success');
+  assert.deepEqual(taps, [[640, 360]]);
+  assert.match(ok.message, /Toqué en \(640,360\)/);
+
+  const exec2 = new Executor(fakeRemote, undefined, undefined, fakeDumper);
+  const fail = await exec2.execute('tapAt', { x: 1, y: 1 });
+  assert.equal(fail.status, 'failed');
+  assert.match(fail.message, /seeScreen antes de tapAt/);
+
+  const bad = await exec.execute('tapAt', {});
+  assert.equal(bad.status, 'failed');
+  assert.match(bad.message, /x e y/);
 });

@@ -3,7 +3,8 @@ import { TvRemote } from '../remote';
 import { RemoteKeyCode } from '../remote';
 import { MemoryStore } from '../memory/store';
 import { SearchProvider } from '../search/search';
-import { captureScreenForVision, adbConnect, adbAvailable } from '../screencap';
+import { captureScreenForVision, adbConnect, adbAvailable, type VisionImage } from '../screencap';
+import { getScreenElements, findMatchingNode, tapAt as adbTap } from '../uidump';
 
 export const TOOLS: ToolDef[] = [
   { name: 'volumeUp', description: 'Sube el volumen de la TV', params: [] },
@@ -18,8 +19,46 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'seeScreen',
     description:
-      'Captura y describe la pantalla actual de la TV. Usala cuando necesites ver la interfaz para navegar (menús, perfiles, apps) antes de usar navigate/enter.',
+      'Captura y describe la pantalla actual de la TV. Último recurso: usala solo si getScreenElements no encuentra el elemento buscado (interfaces en canvas/Compose sin semántica).',
     params: [],
+  },
+  {
+    name: 'getScreenElements',
+    description:
+      'Lista los elementos visibles de la pantalla actual de la TV (texto, si es clickable y su posición). Usala para ubicar perfiles, botones o menús antes de clickElement.',
+    params: [],
+  },
+  {
+    name: 'clickElement',
+    description:
+      'Toca/activa un elemento visible de la pantalla por su texto o descripción (p. ej. "Cambiar de cuenta", un perfil). Usala después de getScreenElements.',
+    params: [
+      {
+        name: 'text',
+        type: 'string',
+        description: 'texto o descripción del elemento a tocar',
+        required: true,
+      },
+    ],
+  },
+  {
+    name: 'tapAt',
+    description:
+      'Toca la pantalla en las coordenadas x,y que hayas identificado sobre la última imagen vista con seeScreen. Las coordenadas van en el mismo sistema (ancho x alto) que se te informó al ver la pantalla. Requiere haber llamado seeScreen antes en esta conversación.',
+    params: [
+      {
+        name: 'x',
+        type: 'number',
+        description: 'coordenada x en el sistema de la imagen de seeScreen',
+        required: true,
+      },
+      {
+        name: 'y',
+        type: 'number',
+        description: 'coordenada y en el sistema de la imagen de seeScreen',
+        required: true,
+      },
+    ],
   },
   {
     name: 'navigate',
@@ -135,13 +174,21 @@ export interface ScreenCapture {
   height: number;
 }
 
+export interface UiDumper {
+  getScreenElements(): import('../uidump').UiNode[];
+  tapAt(x: number, y: number): boolean;
+}
+
 export class Executor {
   private lastScreen: ScreenCapture | null = null;
+  private lastScreenRealSize: { width: number; height: number } | null = null;
 
   constructor(
     private readonly remote: TvRemote,
     private readonly memory?: MemoryStore,
     private readonly search?: SearchProvider,
+    private readonly uiDumper?: UiDumper,
+    private readonly captureVision?: () => VisionImage,
   ) {}
 
   get lastScreenCapture(): ScreenCapture | null {
@@ -150,6 +197,7 @@ export class Executor {
 
   clearScreenCapture(): void {
     this.lastScreen = null;
+    this.lastScreenRealSize = null;
   }
 
   async execute(tool: string, params: Record<string, unknown>): Promise<ExecutionResult> {
@@ -158,6 +206,15 @@ export class Executor {
     }
     if (tool === 'seeScreen') {
       return this.runSeeScreen();
+    }
+    if (tool === 'getScreenElements') {
+      return this.runGetScreenElements();
+    }
+    if (tool === 'clickElement') {
+      return this.runClickElement(params);
+    }
+    if (tool === 'tapAt') {
+      return this.runTapAt(params);
     }
     if (!this.remote.isReady()) {
       return { status: 'failed', message: 'TV remoto no disponible' };
@@ -196,22 +253,111 @@ export class Executor {
 
   private async runSeeScreen(): Promise<ExecutionResult> {
     try {
-      if (!adbAvailable()) {
-        return { status: 'failed', message: 'ADB no disponible en el backend' };
-      }
-      adbConnect();
-      const image = captureScreenForVision(224);
+      const image = this.captureVision
+        ? this.captureVision()
+        : (() => {
+            if (!adbAvailable()) {
+              throw new Error('ADB no disponible en el backend');
+            }
+            adbConnect();
+            return captureScreenForVision(224);
+          })();
       this.lastScreen = image;
+      this.lastScreenRealSize = image.realSize ?? { width: image.width, height: image.height };
       return {
         status: 'success',
-        message: `Pantalla capturada (${image.width}x${image.height}). La imagen se adjuntó al contexto.`,
+        message: `Pantalla capturada (${image.width}x${image.height}). La imagen se adjuntó al contexto. Las coordenadas de tapAt van en este sistema ${image.width}x${image.height}.`,
         image,
       };
     } catch (err) {
       this.lastScreen = null;
+      this.lastScreenRealSize = null;
       return {
         status: 'failed',
         message: `No se pudo capturar la pantalla: ${(err as Error).message}`,
+      };
+    }
+  }
+
+  private async runTapAt(params: Record<string, unknown>): Promise<ExecutionResult> {
+    const x = Number(params.x);
+    const y = Number(params.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return { status: 'failed', message: 'tapAt requiere los parámetros numéricos x e y' };
+    }
+    if (!this.lastScreen || !this.lastScreenRealSize) {
+      return {
+        status: 'failed',
+        message: 'No hay una captura de pantalla reciente. Llamá a seeScreen antes de tapAt.',
+      };
+    }
+    const scaleX = this.lastScreenRealSize.width / this.lastScreen.width;
+    const scaleY = this.lastScreenRealSize.height / this.lastScreen.height;
+    const realX = Math.round(x * scaleX);
+    const realY = Math.round(y * scaleY);
+    const ok = this.uiDumper ? this.uiDumper.tapAt(realX, realY) : adbTap(realX, realY);
+    return ok
+      ? { status: 'success', message: `Toqué en (${realX},${realY})` }
+      : { status: 'failed', message: `Fallo al tocar en (${realX},${realY})` };
+  }
+
+  private async runGetScreenElements(): Promise<ExecutionResult> {
+    try {
+      const nodes = this.uiDumper ? this.uiDumper.getScreenElements() : getScreenElements();
+      if (nodes.length === 0) {
+        return {
+          status: 'failed',
+          message:
+            'No se detectaron elementos con texto en la pantalla. La app puede usar una interfaz sin semántica (canvas/Compose): usá seeScreen para verla.',
+        };
+      }
+      const lines = nodes.map(
+        (n, i) =>
+          `${i + 1}. '${n.text || n.contentDesc}'${n.clickable ? ' (clickable)' : ''} en (${Math.round(
+            (n.bounds!.x1 + n.bounds!.x2) / 2,
+          )},${Math.round((n.bounds!.y1 + n.bounds!.y2) / 2)})`,
+      );
+      return { status: 'success', message: lines.join('\n') };
+    } catch (err) {
+      return {
+        status: 'failed',
+        message: `No se pudo leer la pantalla: ${(err as Error).message}`,
+      };
+    }
+  }
+
+  private async runClickElement(params: Record<string, unknown>): Promise<ExecutionResult> {
+    const query = String(params.text ?? '').trim();
+    if (!query) {
+      return { status: 'failed', message: 'clickElement requiere el parámetro text' };
+    }
+    try {
+      const nodes = this.uiDumper ? this.uiDumper.getScreenElements() : getScreenElements();
+      if (nodes.length === 0) {
+        return {
+          status: 'failed',
+          message: `No pude tocar "${query}": no encontré elementos por texto. Usá seeScreen para ver la pantalla y después tapAt con las coordenadas del elemento.`,
+        };
+      }
+      const match = findMatchingNode(nodes, query);
+      if (!match || !match.bounds) {
+        return {
+          status: 'failed',
+          message: `No encontré "${query}" por texto. Usá seeScreen para ver la pantalla y después tapAt con las coordenadas del elemento. Elementos disponibles:\n${nodes
+            .map((n) => `- '${n.text || n.contentDesc}'`)
+            .join('\n')}`,
+        };
+      }
+      const cx = Math.round((match.bounds.x1 + match.bounds.x2) / 2);
+      const cy = Math.round((match.bounds.y1 + match.bounds.y2) / 2);
+      const ok = this.uiDumper ? this.uiDumper.tapAt(cx, cy) : adbTap(cx, cy);
+      return ok
+        ? { status: 'success', message: `Tocado "${query}" en (${cx},${cy})` }
+        : { status: 'failed', message: `Fallo al tocar "${query}"` };
+    } catch (err) {
+      return {
+        status: 'failed',
+        message: `Error en clickElement: ${(err as Error).message}`,
       };
     }
   }

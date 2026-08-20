@@ -8,10 +8,10 @@ import { execFileSync } from 'child_process';
 import { PNG } from 'pngjs';
 import jpeg from 'jpeg-js';
 
-const ADB_PATH = process.env.ADB_PATH || 'C:/Users/gomit/Android/Sdk/platform-tools/adb.exe';
-const TV_ADDRESS = process.env.TV_ADDRESS || '192.168.1.95:5555';
+export const ADB_PATH = process.env.ADB_PATH || 'C:/Users/gomit/Android/Sdk/platform-tools/adb.exe';
+export const TV_ADDRESS = process.env.TV_ADDRESS || '192.168.1.95:5555';
 
-function adbArgs(extra: string[]): string[] {
+export function adbArgs(extra: string[]): string[] {
   return ['-s', TV_ADDRESS, ...extra];
 }
 
@@ -50,13 +50,16 @@ export interface VisionImage {
   width: number;
   height: number;
   bytes: number;
+  realSize: { width: number; height: number };
 }
 
 /**
  * Redimensiona el PNG a maxWidth (manteniendo aspect ratio) y lo codifica en JPEG base64.
+ * Incluye las dimensiones reales de la captura original para escalar coordenadas.
  */
 export function resizePngToJpeg(pngBuffer: Buffer, maxWidth: number): VisionImage {
   const png = PNG.sync.read(pngBuffer);
+  const realSize = { width: png.width, height: png.height };
   const scale = Math.min(1, maxWidth / png.width);
   const w = Math.max(1, Math.round(png.width * scale));
   const h = Math.max(1, Math.round(png.height * scale));
@@ -88,6 +91,7 @@ export function resizePngToJpeg(pngBuffer: Buffer, maxWidth: number): VisionImag
     width: w,
     height: h,
     bytes: jpegBuf.data.length,
+    realSize,
   };
 }
 
