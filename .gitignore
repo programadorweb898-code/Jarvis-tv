@@ -1,0 +1,21 @@
+# Secretos e identidad
+backend/certs/
+backend/.env
+
+# Node
+node_modules/
+backend/node_modules/
+
+# Build / salida
+backend/dist/
+dist/
+build/
+tv/build/
+.gradle/
+
+# Config local (rutas de SDK específicas de la máquina)
+local.properties
+
+# Logs
+*.log
+server.log

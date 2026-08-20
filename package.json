@@ -7,7 +7,10 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "serve-apk": "node scripts/serve-apk.js",
+    "adb-pair": "scripts/adb-tv.sh pair",
+    "adb-logcat": "scripts/adb-tv.sh logcat"
   },
   "keywords": [],
   "author": "",

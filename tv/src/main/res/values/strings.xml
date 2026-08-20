@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jarvis TV</string>
+    <string name="accessibility_service_label">Jarvis TV Control</string>
+    <string name="accessibility_service_description">Permite que Jarvis TV ejecute acciones en la interfaz visible como lo haría el usuario: navegar, pulsar botones, abrir aplicaciones y escribir texto.</string>
+</resources>

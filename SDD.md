@@ -32,6 +32,8 @@ Flujo conceptual:
 
 Usuario → Android TV (Voz) → Backend (Agent/LLM) → Comando → Android TV (Accessibility Service) → UI → Resultado
 
+> **Decisión arquitectónica (2026-08-19):** la ejecución de acciones se realiza desde el **Backend** mediante el **Android TV Remote protocol v2** (puerto 6466, TLS con el certificado de la app). La TV del proyecto (AI PONT SA, Android 14 / MediaTek homwee) bloquea la habilitación de servicios de accesibilidad de terceros (el framework solo permite los suyos, "disallowed by device admin policy") y rechaza conexiones locales al servicio remote (6466). El backend, desde la LAN, sí puede inyectar teclas en el servicio remote con el mismo certificado que la app, comportándose como el control remoto real (alineado con el Human Capability Principle).
+
 ---
 
 ## 3. Principio fundamental de seguridad
@@ -80,8 +82,8 @@ Responsabilidades:
 - captura de audio;
 - comunicación con backend;
 - recepción de comandos;
-- ejecución de acciones vía Accessibility Service;
-- visualización de feedback visual.
+- visualización de feedback visual;
+- pairing del certificado (el backend lo reutiliza para inyectar teclas).
 
 ### Backend (Cerebro)
 
@@ -314,12 +316,14 @@ No implementar funcionalidades futuras antes de verificar las fases anteriores.
 - TypeScript
 - WebSocket
 - LLM (API de proveedor externo)
+- `androidtv-remote` (cliente del Android TV Remote protocol v2 para inyección de teclas)
 
 ### Android TV
 
 - Android
 - Kotlin
-- Accessibility Service (para ejecución de acciones)
+- Accessibility Service (ejecución alternativa; en la TV del proyecto no es habilitable)
+- Cliente remote/pairing propio en Kotlin (`tv/src/main/java/com/jarvis/tv/remote/`)
 
 No agregar dependencias sin justificar su necesidad.
 
@@ -383,13 +387,47 @@ No asumir estas decisiones como definitivas hasta documentarlas.
 
 ## 20. Estado actual
 
-El proyecto se encuentra en fase de diseño y planificación.
+El proyecto se encuentra en la **Fase 2** del desarrollo incremental.
 
-No comenzar implementaciones complejas hasta definir la arquitectura mínima necesaria.
+### Fase 1 — Comunicación básica (TV ↔ Backend) — en curso
 
-El primer objetivo práctico será conseguir:
+- Backend WebSocket (`backend/src/server.ts`) en puerto 8080 que recibe `audio_stream` y `execution_result`, y puede enviar `command`.
+- TV conecta por WebSocket a `ws://192.168.1.58:8080` (IP local de desarrollo; el destino final es el backend en Render).
+- Protocolo definido en `docs/protocol.md`: mensajes JSON con `id`, `type`, `payload`, `timestamp`.
 
-Android TV → conexión → Backend → ejecución → respuesta.
+### Fase 2 — Ejecución de comandos — en curso
+
+> **Decisión arquitectónica:** la ejecución se hace desde el **Backend** vía Android TV Remote protocol v2 (6466, TLS), no desde la TV vía Accessibility. Motivación: el firmware de la TV (AI PONT, Android 14 / MediaTek homwee) bloquea ambos caminos on-device:
+> - Accesibilidad: solo enumera sus 3 servicios propios y rechaza otros con "disallowed by device admin policy".
+> - Remote local: el servicio 6466 rechaza conexiones cuyo origen es la propia TV (loopback/IP propia), incluso bindeando el socket a la IP LAN.
+> El backend por LAN sí inyecta teclas con el mismo certificado (verificado: volumen 15→16→15).
+
+- `backend/src/remote.ts`: cliente remote v2 (puerto 6466) con `androidtv-remote`, certificado en `backend/certs/` (gitignored, fuera del repo).
+- `backend/src/server.ts`: al recibir `command`, mapea acción→keycode y envía la tecla vía remote; devuelve `execution_result` a la TV.
+- Acciones soportadas: volumeUp/Down, mute, play, pause, playPause, back, home, enter, navigate{Up,Down,Left,Right}.
+- `JarvisAccessibilityService` queda como mecanismo alternativo para TV donde el firmware lo permita; en esta TV no es habilitable.
+- Config por env: `JARVIS_TV_HOST`, `JARVIS_TV_CERT`, `JARVIS_TV_KEY`, `JARVIS_TV_CERT_DIR`, `JARVIS_TV_NAME`.
+- **Verificado end-to-end**: `command volumeUp` → backend → remote 6466 → TV ejecuta (volumen 15→16); `volumeDown` (16→15).
+
+### Fase 3 — Tools y Agente — en curso
+
+- `backend/src/agent/`:
+  - `types.ts`: `AgentDecision` (tool/reply/error), `ToolDef`, `ExecutionResult`.
+  - `tools.ts`: registro de tools + `Executor` (traduce tool → tecla/app link vía `TvRemote`). Tools: `volumeUp`, `volumeDown`, `mute`, `play`, `pause`, `playPause`, `back`, `home`, `navigate(direction)`, `openApp(app)`.
+  - `provider.ts`: interfaz `AgentProvider` intercambiable + factory (`LLM_PROVIDER` env, por defecto `mock`) + provider mock rule-based en español (sin API key).
+  - `agent.ts`: decide (provider) → valida → ejecuta → `execution_result` + `agent_response`.
+- `server.ts`: nuevo mensaje `intent` (texto) → agente → ejecución.
+- **Verificado localmente** (sin TV): `npm test` (node:test) — decisión del provider mock, mapping de executor y agente end-to-end con remote falso.
+- **Pendiente**: conectar proveedor LLM real (OpenAI/Anthropic/otro), probar `openApp` en la TV.
+
+### Pendientes
+
+- Probar el flujo completo con voz (STT/TTS) con el agente LLM.
+- Conectar proveedor LLM real (OpenAI/Anthropic/otro) en `provider.ts`.
+- Probar `openApp` en la TV real (deep links de youtube/netflix y fallback por Play Store ya implementados, sin verificar en dispositivo).
+- Autenticación y WSS (actualmente el backend es `ws://` sin auth).
+- Configurar URL del backend de Render.
+- Reinstalar el APK final en la TV (el hook temporal de auto-submit del código de pairing fue eliminado).
 
 ---
 
@@ -400,4 +438,4 @@ Jarvis TV debe convertirse en un agente capaz de utilizar una Android TV de form
 1. El LLM decide qué acción intentar.
 2. Las tools definen qué acciones puede solicitar.
 3. Android TV determina qué acciones pueden ejecutarse.
-4. Accessibility permite interactuar con la interfaz como lo haría un usuario.
+4. El Backend inyecta las teclas mediante el Android TV Remote protocol v2 (equivalente al control remoto real); Accessibility es el mecanismo alternativo para interacción con la interfaz cuando el firmware lo permite.
