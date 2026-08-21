@@ -2,7 +2,7 @@ import { AgentProvider, AgentImage } from './provider';
 import { Executor } from './tools';
 import { AgentDecision, ExecutionResult } from './types';
 
-const STEP_DELAY_MS = parseInt(process.env.AGENT_STEP_DELAY_MS || '4000', 10);
+const STEP_DELAY_MS = parseInt(process.env.AGENT_STEP_DELAY_MS || '2000', 10);
 
 export interface AgentResult {
   decision: AgentDecision;
@@ -25,7 +25,7 @@ export class Agent {
     const context = this.contextProvider ? this.contextProvider() : [];
     let image: AgentImage | null = null;
     const stepLog: string[] = [];
-    const MAX_STEPS = 4;
+    const MAX_STEPS = 10;
 
     for (let i = 0; i < MAX_STEPS; i++) {
       const decision = await this.provider.decide(text, [...context, ...stepLog], image);
@@ -43,11 +43,15 @@ export class Agent {
 
       if (decision.kind === 'tool') {
         const result = await this.apply(decision, image);
-        const cont = ['navigate', 'openApp', 'back', 'home', 'getScreenElements', 'clickElement'].includes(
+        const cont = ['navigate', 'openApp', 'back', 'home', 'getScreenElements', 'clickElement', 'tapAt'].includes(
           decision.tool,
         );
         if (cont) {
-          stepLog.push(`[Acción: ${decision.tool} ${JSON.stringify(decision.params)} → ${result.response}]`);
+          const hint =
+            decision.tool === 'tapAt'
+              ? ' Si la pantalla cambió y todavía no completaste el pedido, llamá seeScreen de nuevo antes de seguir tocando.'
+              : '';
+          stepLog.push(`[Acción: ${decision.tool} ${JSON.stringify(decision.params)} → ${result.response}.${hint}]`);
           continue;
         }
         return result;

@@ -345,3 +345,45 @@ test('executor tapAt escala coordenadas de la imagen chica a la real', async () 
   assert.equal(bad.status, 'failed');
   assert.match(bad.message, /x e y/);
 });
+
+test('agente encadena seeScreen→tapAt→seeScreen→tapAt hasta el reply final', async () => {
+  const taps = [];
+  const fakeDumper = {
+    getScreenElements: () => [],
+    tapAt: (x, y) => {
+      taps.push([x, y]);
+      return true;
+    },
+  };
+  const fakeCapture = () => ({
+    dataUrl: 'data:image/jpeg;base64,xx',
+    width: 224,
+    height: 126,
+    bytes: 1000,
+    realSize: { width: 1280, height: 720 },
+  });
+  const exec = new Executor(fakeRemote, undefined, undefined, fakeDumper, fakeCapture);
+
+  const seq = [
+    { kind: 'tool', tool: 'openApp', params: { app: 'youtube' } },
+    { kind: 'tool', tool: 'seeScreen', params: {} },
+    { kind: 'tool', tool: 'tapAt', params: { x: 112, y: 63 } },
+    { kind: 'tool', tool: 'seeScreen', params: {} },
+    { kind: 'tool', tool: 'tapAt', params: { x: 80, y: 100 } },
+    { kind: 'reply', text: 'Listo, cambié al perfil.' },
+  ];
+  const provider = {
+    name: 'sequential',
+    decide: async () => seq.shift(),
+  };
+  const agent = new Agent(provider, exec);
+
+  const result = await agent.handle('cambiá al perfil ProgramadorWeb en youtube');
+  assert.equal(result.decision.kind, 'reply');
+  assert.equal(result.response, 'Listo, cambié al perfil.');
+  assert.deepEqual(taps, [
+    [640, 360],
+    [457, 571],
+  ]);
+  assert.ok(seq.length === 0, 'se consumieron todos los pasos planeados');
+});

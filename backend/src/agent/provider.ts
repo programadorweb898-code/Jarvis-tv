@@ -104,7 +104,8 @@ class OpenAICompatibleProvider implements AgentProvider {
 
 Ver la pantalla:
 - Camino principal para ubicar o tocar un elemento visible (perfil, botón, menú): getScreenElements (lista lo que hay) → clickElement(text del elemento). No asumas qué app está abierta.
-- Si getScreenElements viene vacío ("No se detectaron elementos") O clickElement no encuentra el elemento: llamá seeScreen UNA sola vez, mirá la imagen, identificá el elemento buscado y llamá tapAt(x, y) con sus coordenadas. No encadenes múltiples seeScreen ni navegues con dpad a ciegas.
+- Si getScreenElements viene vacío ("No se detectaron elementos") O clickElement no encuentra el elemento: llamá seeScreen, identificá el elemento en la imagen y llamá tapAt(x, y) con sus coordenadas. No navegues con dpad a ciegas.
+- Después de un tapAt, si la pantalla cambió y todavía no llegaste al objetivo final del pedido (por ejemplo seleccionar un perfil después de haber tocado "cambiar de cuenta"), volvé a llamar seeScreen para ver el nuevo estado y seguí tocando con tapAt hasta completar la tarea o quedarte sin pasos. No asumas que un solo tap resuelve pedidos que requieren varias pantallas (cambiar de perfil, navegar menús anidados).
 - Las coordenadas de tapAt van en el sistema de coordenadas de la imagen que viste con seeScreen (el ancho y alto se te informan al capturar), NO en la resolución real de la TV: el backend las escala automáticamente.
 - navigate (dpad) queda reservado para pedidos genéricos sin un elemento visual puntual (p. ej. "andá para arriba", "movete a la derecha"), no como mecanismo de búsqueda de elementos.
 - Para cambiar de cuenta/perfil dentro de una app abierta: listá los elementos con getScreenElements y tocá "Cambiar de cuenta" o el perfil con clickElement; si el listado viene vacío, seeScreen una vez y tapAt sobre el perfil que veas en la imagen.`,

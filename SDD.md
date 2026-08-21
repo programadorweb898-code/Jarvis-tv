@@ -476,14 +476,16 @@ El proyecto se encuentra en la **Fase 4** del desarrollo incremental.
 
 ### Flujo real en TVs sin semántica de accesibilidad: seeScreen → tapAt (2026-08-20)
 
-- En esta TV, el camino feliz para tocar un elemento es **seeScreen (una sola vez) → tapAt(x, y)**, no la navegación ciega guiada por visión:
+- En esta TV, el camino feliz para tocar un elemento es **seeScreen → tapAt(x, y)**, no la navegación ciega guiada por visión:
   1. `seeScreen` captura la pantalla (ADB) y adjunta la imagen al contexto del LLM junto con su resolución (p. ej. `224x126`).
   2. El propio orquestador (provider.ts, ya multimodal) identifica las coordenadas del elemento **sobre la imagen reducida**.
   3. `tapAt(x, y)` (tool directa del agente) escala esas coordenadas a la resolución real de la captura (`realSize`, expuesta por `captureScreenForVision`/`resizePngToJpeg` en `screencap.ts`) y ejecuta `adb shell input tap`. El backend hace la conversión; el prompt le indica al LLM que las coordenadas van en el sistema de la imagen, no en la resolución real.
+- **Puede encadenarse:** una misma acción del usuario puede requerir varias pantallas (cambiar de perfil, menús anidados): `seeScreen → tapAt → seeScreen → tapAt → ...` hasta completar el pedido. El loop del agente continúa tras `tapAt` (junto a navigate/openApp/back/home/getScreenElements/clickElement) y el stepLog le recuerda al modelo volver a `seeScreen` si la pantalla cambió. `MAX_STEPS=10` (un cambio de perfil típico son 8 pasos: openApp → getScreenElements vacío → seeScreen → tapAt → seeScreen → tapAt → seeScreen → tapAt).
 - **Sin llamadas de visión duplicadas:** no existe un modelo de visión "aparte" dentro de `clickElement` ni de `tapAt`; el LLM multimodal ya recibió la imagen en el `decide()` del loop. `tapAt` es una tool directa, no lógica interna de otra tool.
 - **`Executor` mantiene estado:** `lastScreen` (imagen reducida) + `lastScreenRealSize` (resolución original). `tapAt` falla con "No hay una captura de pantalla reciente. Llamá a seeScreen antes de tapAt" si no hubo captura previa.
 - **Reserva de dpad:** `navigate` queda solo para pedidos genéricos ("andá para arriba", "movete a la derecha"), no como mecanismo de búsqueda de elementos.
-- **Verificado:** test con mock de captura 224x126 → `realSize` 1280x720, `tapAt(112,63)` → `adb input tap 640 360` (12 tests, 0 fallos).
+- **Retardo entre pasos:** `AGENT_STEP_DELAY_MS` (default 2000 ms; antes 4000 ms para el tier free de Groq). Con un modelo sin rate-limit se puede bajar a 1000.
+- **Verificado:** test con mock de captura 224x126 → `realSize` 1280x720, `tapAt(112,63)` → `adb input tap 640 360`, y loop completo `openApp → seeScreen → tapAt → seeScreen → tapAt → reply` dentro de MAX_STEPS (13 tests, 0 fallos).
 
 ### Verificado en TV real (2026-08-20)
 
