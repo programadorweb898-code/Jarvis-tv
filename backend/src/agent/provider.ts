@@ -144,6 +144,7 @@ Ver la pantalla:
     const toolCall = Array.isArray(message?.tool_calls) && message!.tool_calls[0]
       ? (message!.tool_calls[0] as { function?: { name?: string; arguments?: string } })
       : null;
+    const reasoning = typeof message?.content === 'string' ? message.content.trim() : '';
 
     if (toolCall?.function?.name) {
       const tool = findTool(toolCall.function.name);
@@ -161,6 +162,8 @@ Ver la pantalla:
           params = {};
         }
       }
+      // Este log solo cubre el razonamiento enviado en message.content.
+      if (reasoning) console.log(`[agent:reasoning] ${tool.name} <- ${reasoning}`);
       return { kind: 'tool', tool: tool.name, params };
     }
 
