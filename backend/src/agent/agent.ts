@@ -32,6 +32,7 @@ export class Agent {
       if (i > 0) await sleep(STEP_DELAY_MS);
 
       if (decision.kind === 'tool' && decision.tool === 'seeScreen') {
+        console.log(`[agent] tool: seeScreen`);
         const screen = await this.executor.execute('seeScreen', {});
         if (screen.status === 'success' && screen.image) {
           image = screen.image;
@@ -42,7 +43,9 @@ export class Agent {
       }
 
       if (decision.kind === 'tool') {
+        console.log(`[agent] tool: ${decision.tool} ${JSON.stringify(decision.params)}`);
         const result = await this.apply(decision, image);
+        console.log(`[agent] resultado: ${decision.tool} → ${result.execution?.status ?? 'sin ejecución'}: ${result.response}`);
         const cont = ['navigate', 'openApp', 'back', 'home', 'getScreenElements', 'clickElement', 'tapAt'].includes(
           decision.tool,
         );
@@ -82,8 +85,10 @@ export class Agent {
         return { decision, execution, response };
       }
       case 'reply':
+        console.log(`[agent] reply: ${decision.text}`);
         return { decision, execution: null, response: decision.text };
       case 'error':
+        console.log(`[agent] error: ${decision.message}`);
         return { decision, execution: null, response: decision.message };
     }
   }
